@@ -29,6 +29,7 @@ struct NativeState {
 }
 static NATIVE: OnceLock<Mutex<BTreeMap<isize, NativeState>>> = OnceLock::new();
 static RECOVER: AtomicBool = AtomicBool::new(false);
+static CURSOR_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 static POLICY: Mutex<()> = Mutex::new(());
 fn native() -> &'static Mutex<BTreeMap<isize, NativeState>> {
     NATIVE.get_or_init(Mutex::default)
@@ -144,7 +145,7 @@ unsafe extern "system" fn subclass(
                 WM_ENTERMENULOOP => state.guarded |= 2,
                 WM_EXITMENULOOP => state.guarded &= !2,
                 WM_IME_STARTCOMPOSITION => state.guarded |= 4,
-                WM_IME_ENDCOMPOSITION => state.guarded &= !4,
+                WM_IME_ENDCOMPOSITION | WM_KILLFOCUS => state.guarded &= !4,
                 WM_CANCELMODE => state.guarded = 0,
                 WM_DWMSENDICONICTHUMBNAIL | WM_DWMSENDICONICLIVEPREVIEWBITMAP => {
                     bitmap = state.preview_blocked
@@ -325,6 +326,11 @@ pub fn start(app: AppHandle) {
                     break;
                 }
             };
+            if recover && ids.is_empty() {
+                if let Err(error) = recover_empty_workspace(&app) {
+                    eprintln!("Unable to create recovery window: {error}");
+                }
+            }
             for id in ids {
                 if let Err(error) = tick(&app, &id, recover) {
                     eprintln!("Privacy policy failed for {}: {error}", id.0);
@@ -341,6 +347,17 @@ pub fn start(app: AppHandle) {
     });
 }
 
+fn recover_empty_workspace(app: &AppHandle) -> Result<(), String> {
+    let host = app
+        .state::<AppState>()
+        .lock()
+        .map_err(|_| "Window registry unavailable")?
+        .reserve(crate::window_state::WindowMode::AlwaysVisible, None)?;
+    super::create_host(app, &host)?;
+    crate::storage::dirty();
+    Ok(())
+}
+
 pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String> {
     let _policy = POLICY.lock().map_err(|_| "Privacy policy unavailable")?;
     let Some(window) = app.get_window(&id.0) else {
@@ -349,11 +366,25 @@ pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String>
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let mut cursor = POINT::default();
     let mut rect = RECT::default();
+    let cursor_available = match unsafe { GetCursorPos(&mut cursor) } {
+        Ok(()) => {
+            if CURSOR_UNAVAILABLE.swap(false, Ordering::SeqCst) {
+                eprintln!("Input desktop cursor access restored");
+            }
+            true
+        }
+        Err(error) => {
+            if !CURSOR_UNAVAILABLE.swap(true, Ordering::SeqCst) {
+                eprintln!("Cursor unavailable; privacy windows remain hidden: {error}");
+            }
+            false
+        }
+    };
     unsafe {
-        GetCursorPos(&mut cursor).map_err(|e| e.to_string())?;
-        GetWindowRect(hwnd, &mut rect).map_err(|e| e.to_string())?;
+        GetWindowRect(hwnd, &mut rect).map_err(|e| format!("Read Slice bounds: {e}"))?;
     }
-    let inside = cursor.x >= rect.left
+    let inside = cursor_available
+        && cursor.x >= rect.left
         && cursor.x < rect.right
         && cursor.y >= rect.top
         && cursor.y < rect.bottom;
@@ -363,8 +394,21 @@ pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String>
         .get(&(hwnd.0 as isize))
         .is_some_and(|state| state.guarded != 0);
     let pointer_down = unsafe {
-        GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0
+        GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0
+            || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0
+            || GetAsyncKeyState(VK_MBUTTON.0 as i32) < 0
     };
+    let mut gui = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    // 查询前台输入线程的真实捕获和菜单归属，其他应用按住鼠标不能阻止本窗隐身。
+    let input_guard = cursor_available
+        && unsafe { GetGUIThreadInfo(0, &mut gui) }.is_ok()
+        && ((pointer_down && owns_input(hwnd, gui.hwndCapture))
+            || (gui.flags.0 & (GUI_INMENUMODE.0 | GUI_POPUPMENUMODE.0 | GUI_SYSTEMMENUMODE.0)
+                != 0
+                && owns_input(hwnd, gui.hwndMenuOwner)));
     let (options, old_hidden, selecting) = {
         let state = app.state::<AppState>();
         let mut registry = state.lock().map_err(|_| "Window registry unavailable")?;
@@ -381,7 +425,7 @@ pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String>
         let composing = content.composing && unsafe { GetForegroundWindow() } == hwnd;
         (options, content.hidden, content.selecting || composing)
     };
-    let protected = !old_hidden && (native_guard || pointer_down || selecting);
+    let protected = cursor_available && !old_hidden && (native_guard || input_guard || selecting);
     let hidden = crate::policy::should_hide(&options, inside, protected);
     if let Some(view) = app.get_webview(&crate::content::content_label(id)) {
         let previous = {
@@ -449,7 +493,9 @@ pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String>
         };
     }
     let passthrough = hidden || options.manual_passthrough;
-    let changed = {
+    let actual_passthrough =
+        unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } & WS_EX_TRANSPARENT.0 as isize != 0;
+    let changed = actual_passthrough != passthrough || {
         let state = app.state::<AppState>();
         let registry = state.lock().map_err(|_| "Window registry unavailable")?;
         registry.windows.get(id).is_some_and(|host| {
@@ -471,4 +517,11 @@ pub fn tick(app: &AppHandle, id: &WindowId, recover: bool) -> Result<(), String>
         };
     }
     Ok(())
+}
+
+fn owns_input(root: HWND, target: HWND) -> bool {
+    !target.0.is_null()
+        && (target == root
+            || unsafe { GetAncestor(target, GA_ROOT) } == root
+            || unsafe { GetAncestor(target, GA_ROOTOWNER) } == root)
 }

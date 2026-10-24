@@ -2,7 +2,17 @@
   if (window.top !== window || window.__omni) return;
   const nonce = '__OMNISLICE_NONCE__';
   const post = window.chrome?.webview?.postMessage.bind(window.chrome.webview);
-  function composition(active) { if (post) post({ omnisliceInteraction: { nonce, active } }); }
+  const create = Object.create;
+  function composition(active) {
+    if (!post) return;
+    // 隔离页面对 Object.prototype.toJSON 的修改，避免序列化时泄露实例 nonce。
+    const payload = create(null);
+    payload.nonce = nonce;
+    payload.active = active;
+    const message = create(null);
+    message.omnisliceInteraction = payload;
+    post(message);
+  }
   window.addEventListener('compositionstart', event => { if (event.isTrusted) composition(true); }, true);
   window.addEventListener('compositionend', event => { if (event.isTrusted) composition(false); }, true);
   window.addEventListener('blur', event => { if (event.isTrusted) composition(false); }, true);

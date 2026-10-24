@@ -46,6 +46,10 @@ async function check(name, work, cleanup) {
 }
 
 try {
+  if (process.env.DEBUGGER_ADDRESS) {
+    const endpoint = await fetch(`http://${process.env.DEBUGGER_ADDRESS}/json/version`, { signal: AbortSignal.timeout(3000) });
+    if (!endpoint.ok) throw new Error('WebView2 debugging endpoint is unavailable; keep a Slice window open.');
+  }
   const capabilities = process.env.DEBUGGER_ADDRESS
     ? { browserName: 'webview2', 'ms:edgeChromium': true, 'ms:edgeOptions': { debuggerAddress: process.env.DEBUGGER_ADDRESS } }
     : { 'tauri:options': { application } };
@@ -81,12 +85,17 @@ try {
     await new Promise(resolve => setTimeout(resolve, 150));
     const first = await value('return getComputedStyle(document.querySelector("#nested")).color;');
     assert.match(first, /0\.3\)/);
+    assert.match(await value('return getComputedStyle(document.body).backgroundColor;'), /0\.4\)/);
     await value('window.__omni.alpha(0.5,0.5); return true;');
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await value('return getComputedStyle(document.querySelector("#nested")).color;'), first);
     await value('document.querySelector("#inherit").append(Object.assign(document.createElement("span"),{id:"new-child",textContent:"新增"})); return true;');
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await value('return getComputedStyle(document.querySelector("#new-child")).color;'), first);
+    await value('window.__omni.alpha(1,1); return true;');
+    await delay(150);
+    assert.match(await value('return getComputedStyle(document.querySelector("#nested")).color;'), /0\.6\)/);
+    assert.match(await value('return getComputedStyle(document.body).backgroundColor;'), /0\.8\)/);
   });
   await command('POST', '/window', { handle: control });
   await check('原生矩形框选及固定布局视口', async () => {
@@ -159,6 +168,58 @@ try {
     await invoke('update_window_options', { windowId: host.id, options: { ...host.options, topmost: false } });
     assert.equal((await native('[OmniSliceProbe]::State("window-002")')).styles & 8, 0);
   });
+  await check('不同窗口比例下的原生点击映射', async () => {
+    host = (await invoke('list_windows')).find(item => item.id === host.id);
+    host = await invoke('update_window_options', { windowId: host.id, options: { ...host.options, privacyEnabled: false, topmost: true } });
+    const content = await find('content-window-002');
+    await value('Object.assign(document.querySelector("#count").style,{position:"fixed",left:"300px",top:"300px"});return true;');
+    evidence.clickMappings = [];
+    for (const [width,height] of [[420,650],[800,560],[556,789]]) {
+      await native(`[OmniSliceProbe]::Resize("window-002",${width},${height})`);
+      await delay(400);
+      await command('POST', '/window', { handle: content });
+      const point = await value('const r=document.querySelector("#count").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,before:document.querySelector("#count").textContent,viewport:[innerWidth,innerHeight]};');
+      assert.deepEqual(point.viewport,[1280,900]);
+      await command('POST', '/window', { handle: control });
+      const slot = await value('const r=document.querySelector(".viewport").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,dpi:devicePixelRatio};');
+      const state = await native('[OmniSliceProbe]::State("window-002")');
+      const scale = (await invoke('window_diagnostics',{windowId:host.id})).contentScale;
+      const crop = host.slices[0].crop;
+      const x = Math.round(state.client[0]+slot.x*slot.dpi+(slot.width*slot.dpi-crop.width*scale)/2+(point.x-crop.x)*scale);
+      const y = Math.round(state.client[1]+slot.y*slot.dpi+(slot.height*slot.dpi-crop.height*scale)/2+(point.y-crop.y)*scale);
+      await native(`[OmniSliceProbe]::Drag("window-002",${x},${y},${x},${y})`);
+      await command('POST', '/window', { handle: content });
+      const after = await value('return document.querySelector("#count").textContent;');
+      assert.notEqual(after,point.before);
+      evidence.clickMappings.push({width,height,scale,x,y,before:point.before,after});
+    }
+    await command('POST', '/window', { handle: control });
+  });
+  await check('网页拖出窗口松手及其他窗口按下隔离', async () => {
+    host = await invoke('update_window_options',{windowId:host.id,options:{...host.options,privacyEnabled:true,topmost:true}});
+    const drag = await native('[OmniSliceProbe]::HoldOutside("window-002",350,450)');
+    evidence.pointerCapture = drag;
+    assert.equal(drag.held.region,0);
+    assert.equal(drag.gui.captureRoot,drag.held.hwnd);
+    assert.equal(drag.released.region,1);
+    other = await invoke('update_window_options',{windowId:other.id,options:{...other.options,privacyEnabled:false,topmost:true}});
+    await native(`[OmniSliceProbe]::PlaceAt("${other.id}",800,80)`);
+    const isolated = await native(`[OmniSliceProbe]::OtherPress("window-002","${other.id}",1100,110)`);
+    evidence.otherWindowPress = isolated;
+    assert.equal(isolated.region,1);
+  });
+  await check('多个置顶窗口的实际层序', async () => {
+    host = await invoke('update_window_options',{windowId:host.id,options:{...host.options,privacyEnabled:false,topmost:true}});
+    await invoke('raise_window',{windowId:host.id});
+    other = await invoke('update_window_options',{windowId:other.id,options:{...other.options,topmost:false}});
+    other = await invoke('update_window_options',{windowId:other.id,options:{...other.options,topmost:true}});
+    assert.deepEqual(await native(`[OmniSliceProbe]::Order("${host.id}","${other.id}")`),[other.id,host.id]);
+    await invoke('raise_window',{windowId:host.id});
+    assert.deepEqual(await native(`[OmniSliceProbe]::Order("${host.id}","${other.id}")`),[host.id,other.id]);
+    await invoke('raise_window',{windowId:other.id});
+    await invoke('update_window_options',{windowId:host.id,options:{...host.options,textAlpha:0.7}});
+    assert.deepEqual(await native(`[OmniSliceProbe]::Order("${host.id}","${other.id}")`),[other.id,host.id]);
+  });
   await writeFile(resolve(output, 'webview.png'), Buffer.from(await command('GET', '/screenshot'), 'base64'));
 } catch (error) {
   evidence.checks.push({ name: 'suite', status: 'fail', error: String(error) });
@@ -166,6 +227,7 @@ try {
   console.error(error);
 } finally {
   evidence.finished = new Date().toISOString();
+  await writeFile(resolve(output, `smoke-${evidence.started.replaceAll(/[:.]/g, '-')}.json`), JSON.stringify(evidence, null, 2));
   await writeFile(resolve(output, 'smoke.json'), JSON.stringify(evidence, null, 2));
   if (session) await request('DELETE', `/session/${session}`).catch(error => console.error(`Session cleanup: ${error}`));
 }
