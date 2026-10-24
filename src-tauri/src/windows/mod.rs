@@ -54,7 +54,7 @@ fn create_local_host(app: &AppHandle, host: &HostWindow) -> Result<(), String> {
         .transparent(true)
         .visible(false)
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("Create Slice native window: {error}"))?;
     let id = host.id.clone();
     let app_for_close = app.clone();
     window.on_window_event(move |event| {
@@ -87,15 +87,20 @@ fn create_local_host(app: &AppHandle, host: &HostWindow) -> Result<(), String> {
             automation_builder(
                 WebviewBuilder::new(&host.control_webview_id.0, WebviewUrl::App(url.into()))
                     .on_navigation(is_local_control_url)
+                    .transparent(true)
+                    .background_color(tauri::webview::Color(0, 0, 0, 0))
                     .auto_resize(),
             ),
             LogicalPosition::new(0.0, 0.0),
             LogicalSize::new(540.0, 780.0),
         )
-        .map_err(|error| error.to_string())?;
-    privacy::install(&window)?;
-    privacy::tick(app, &host.id, false)?;
-    window.show().map_err(|error| error.to_string())?;
+        .map_err(|error| format!("Create control WebView: {error}"))?;
+    privacy::install(&window).map_err(|error| format!("Install Slice hooks: {error}"))?;
+    privacy::tick(app, &host.id, false)
+        .map_err(|error| format!("Apply initial Slice policy: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("Show Slice: {error}"))?;
     #[cfg(windows)]
     eprintln!(
         "Native host {} HWND={:?} control={}",

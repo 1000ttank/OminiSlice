@@ -62,8 +62,8 @@ fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .visible(false)
         .skip_taskbar(true)
         .build()
-        .map_err(|e| e.to_string())?;
-    windows::privacy::install(&recovery)?;
+        .map_err(|e| format!("Create recovery host: {e}"))?;
+    windows::privacy::install(&recovery).map_err(|e| format!("Install recovery hooks: {e}"))?;
     let saved = match storage::load(app) {
         Ok(saved) => saved,
         Err(error) => {
@@ -105,7 +105,14 @@ fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
             let window = app
                 .get_window(&host.id.0)
                 .ok_or("Restored window unavailable")?;
-            let geometry = storage::clamp(saved.geometry, &monitors);
+            let inner = window.inner_size().map_err(|e| e.to_string())?;
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let geometry = storage::clamp_inner(
+                saved.geometry,
+                &monitors,
+                outer.width.saturating_sub(inner.width),
+                outer.height.saturating_sub(inner.height),
+            );
             window
                 .set_size(tauri::PhysicalSize::new(geometry.width, geometry.height))
                 .map_err(|e| e.to_string())?;

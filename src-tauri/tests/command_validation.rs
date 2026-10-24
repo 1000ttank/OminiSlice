@@ -183,3 +183,32 @@ fn workspace_rejects_unknown_versions_and_dangerous_urls() {
     let restored: Workspace = serde_json::from_str(&serialized).unwrap();
     assert_eq!(restored.windows[0].geometry.width, 540);
 }
+
+#[test]
+fn monitor_restore_keeps_non_client_frame_inside_work_area() {
+    use omnislice_lib::storage::{clamp_inner, Geometry};
+    let area = Geometry {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1032,
+    };
+    let saved = Geometry {
+        x: 1900,
+        y: 900,
+        width: 540,
+        height: 780,
+    };
+    let restored = clamp_inner(saved, &[area], 16, 9);
+    assert_eq!(
+        restored,
+        Geometry {
+            x: 1364,
+            y: 243,
+            width: 540,
+            height: 780
+        }
+    );
+    assert_eq!(restored.x + restored.width as i32 + 16, 1920);
+    assert_eq!(restored.y + restored.height as i32 + 9, 1032);
+}

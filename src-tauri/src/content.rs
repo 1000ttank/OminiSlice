@@ -109,6 +109,7 @@ pub fn open_internal(
                 content_label(window_id),
                 WebviewUrl::External(url),
             ))
+            .transparent(true)
             .initialization_script(
                 include_str!("../../scripts/page-adapter.js")
                     .replace("__OMNISLICE_NONCE__", &nonce),

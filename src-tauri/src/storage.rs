@@ -107,6 +107,27 @@ pub fn clamp(mut window: Geometry, monitors: &[Geometry]) -> Geometry {
     window
 }
 
+pub fn clamp_inner(
+    window: Geometry,
+    monitors: &[Geometry],
+    frame_width: u32,
+    frame_height: u32,
+) -> Geometry {
+    let outer = clamp(
+        Geometry {
+            width: window.width.saturating_add(frame_width),
+            height: window.height.saturating_add(frame_height),
+            ..window
+        },
+        monitors,
+    );
+    Geometry {
+        width: outer.width.saturating_sub(frame_width).max(1),
+        height: outer.height.saturating_sub(frame_height).max(1),
+        ..outer
+    }
+}
+
 fn path(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = if let Some(directory) = std::env::var_os("OMNISLICE_CONFIG_DIR") {
         PathBuf::from(directory)
