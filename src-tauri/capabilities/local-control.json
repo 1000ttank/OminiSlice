@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-control",
+  "description": "仅显式注册的本地控制 Webview 可以管理窗口。",
+  "local": true,
+  "webviews": ["control-window-*"],
+  "permissions": ["window-control", "core:window:allow-close", "core:window:allow-start-dragging"]
+}

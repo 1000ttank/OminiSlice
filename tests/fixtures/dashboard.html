@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>OmniSlice 原生验收页面</title>
+<style>
+body{margin:0;width:1280px;background:rgba(30,45,60,.8);font:20px/1.6 sans-serif;color:rgba(240,250,255,.8)}
+nav{height:90px;background:#1b2935;padding:20px;box-sizing:border-box}main{margin:60px 160px;width:720px;padding:30px;background:rgba(70,100,130,.6)}
+button,input{font:inherit;padding:8px}canvas{background:#111e29}#inherit{color:rgba(100,200,240,.6)}
+</style>
+<nav>非切片区域 · 导航栏 · 原始视口 1280 × 900</nav>
+<main id="target"><h1>实时数据切片</h1><p id="tick"></p><canvas id="chart" width="660" height="180"></canvas>
+<p id="inherit">继承颜色 <span id="nested">嵌套文字 <b>二级继承</b></span></p>
+<p id="dynamic"></p><label>输入验证 <input id="input" placeholder="中文输入、复制与选择" /></label>
+<p><button id="count">点击计数：0</button> <button id="sound">切换 WebAudio</button></p></main>
+<script>
+let count=0,audio,oscillator;document.querySelector('#count').onclick=e=>e.currentTarget.textContent=`点击计数：${++count}`;
+document.querySelector('#sound').onclick=async()=>{if(!audio){audio=new AudioContext();oscillator=audio.createOscillator();const gain=audio.createGain();gain.gain.value=.03;oscillator.connect(gain).connect(audio.destination);oscillator.start()}else if(audio.state==='running')await audio.suspend();else await audio.resume()};
+setInterval(()=>{document.querySelector('#tick').textContent=new Date().toLocaleTimeString();document.querySelector('#dynamic').innerHTML='<span>动态继承文字 '+count+'</span>';const context=document.querySelector('#chart').getContext('2d');context.clearRect(0,0,660,180);context.strokeStyle='#86dccb';context.beginPath();for(let x=0;x<660;x++)context.lineTo(x,90+Math.sin(x/35+Date.now()/1000)*50);context.stroke()},1000);
+</script></html>

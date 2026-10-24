@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "window-control"
+description = "本地控制界面最小窗口管理命令"
+commands.allow = ["list_windows", "create_window", "update_window_options", "raise_window", "open_slice", "begin_crop", "set_content_bounds", "window_diagnostics"]
